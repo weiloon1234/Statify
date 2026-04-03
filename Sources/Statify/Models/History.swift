@@ -1,62 +1,70 @@
 import Foundation
 
-struct HistoryPoint {
-    var timestamp: Date
-    var value: Double
-}
-
 final class HistoryTracker {
-    private var points: [HistoryPoint] = []
-    private let saveQueue = DispatchQueue(label: "com.statify.history.save", qos: .utility)
-    private var pendingSaveWorkItem: DispatchWorkItem?
-    let maxPoints: Int
-    let key: String
+    private var buffer: ContiguousArray<Double>
+    private var head = 0
+    private var count = 0
+    private let maxPoints: Int
+    private let key: String
 
     init(maxPoints: Int = 30, key: String = "") {
         self.maxPoints = maxPoints
         self.key = key
+        self.buffer = ContiguousArray(repeating: 0, count: maxPoints)
         load()
-        if points.isEmpty {
-            for _ in 0..<maxPoints {
-                points.append(HistoryPoint(timestamp: Date().addingTimeInterval(-Double(maxPoints)), value: 0))
-            }
+        if count == 0 {
+            count = maxPoints
         }
     }
 
     func add(_ value: Double) {
-        points.append(HistoryPoint(timestamp: Date(), value: value))
-        if points.count > maxPoints {
-            points.removeFirst(points.count - maxPoints)
-        }
+        buffer[head] = value
+        head = (head + 1) % maxPoints
+        if count < maxPoints { count += 1 }
         scheduleSave()
     }
 
-    var values: [Double] { points.map(\.value) }
-    var isEmpty: Bool { points.isEmpty }
+    var values: [Double] {
+        var result = [Double]()
+        result.reserveCapacity(count)
+        for i in 0..<count {
+            let idx = (head - count + i + maxPoints) % maxPoints
+            result.append(buffer[idx])
+        }
+        return result
+    }
+
+    var isEmpty: Bool { count == 0 }
+
+    private let saveQueue = DispatchQueue(label: "com.statify.history.save", qos: .utility)
+    private var lastSave: Date?
 
     private func scheduleSave() {
         guard !key.isEmpty else { return }
-        pendingSaveWorkItem?.cancel()
-        let snapshot = points.map { [$0.timestamp.timeIntervalSince1970, $0.value] }
-        let workItem = DispatchWorkItem { [key] in
-            UserDefaults.standard.set(snapshot, forKey: "history_\(key)")
+        if let lastSave, Date().timeIntervalSince(lastSave) < 5 { return }
+        lastSave = Date()
+        let snapshot = self.buffer
+        let saveCount = count
+        let saveHead = head
+        let saveMax = maxPoints
+        saveQueue.async { [key] in
+            var data: [[Double]] = []
+            data.reserveCapacity(saveCount)
+            for i in 0..<saveCount {
+                let idx = (saveHead - saveCount + i + saveMax) % saveMax
+                data.append([0, snapshot[idx]])
+            }
+            UserDefaults.standard.set(data, forKey: "history_\(key)")
         }
-        pendingSaveWorkItem = workItem
-        saveQueue.asyncAfter(deadline: .now() + 1.0, execute: workItem)
-    }
-
-    private func save() {
-        guard !key.isEmpty else { return }
-        let data = points.map { [$0.timestamp.timeIntervalSince1970, $0.value] }
-        UserDefaults.standard.set(data, forKey: "history_\(key)")
     }
 
     private func load() {
         guard !key.isEmpty,
               let data = UserDefaults.standard.array(forKey: "history_\(key)") as? [[Double]] else { return }
-        points = data.compactMap { pair in
-            guard pair.count == 2 else { return nil }
-            return HistoryPoint(timestamp: Date(timeIntervalSince1970: pair[0]), value: pair[1])
+        for pair in data.prefix(maxPoints) {
+            guard pair.count >= 2 else { continue }
+            buffer[count % maxPoints] = pair[1]
+            count += 1
         }
     }
 }

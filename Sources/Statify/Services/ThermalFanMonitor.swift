@@ -33,6 +33,22 @@ final class ThermalFanMonitor {
         if smcConnection != 0 { IOServiceClose(smcConnection) }
     }
 
+    /// Lightweight: reads only a few SMC keys for CPU temperature.
+    /// Used in statusBar scope to avoid the full sample() overhead.
+    func readCPUTempOnly() -> Double? {
+        guard smcConnection != 0 else { return nil }
+
+        // Performance cores first (higher priority), then efficiency cores
+        let cpuKeys = ["Tp0P", "Tp0D", "TC1C", "Tp1P", "Tp1D", "TC2C", "TDEC"]
+
+        for key in cpuKeys {
+            if let temp = readTemperatureValue(for: key), isValidTemperature(temp) {
+                return temp
+            }
+        }
+        return nil
+    }
+
     func sample() -> ThermalData {
         let sensors = readTemperatureSensors()
         let cpuTemp = readCPUTemp(from: sensors)

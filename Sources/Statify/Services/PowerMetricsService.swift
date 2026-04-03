@@ -427,10 +427,14 @@ final class PowerMetricsService: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    private func machToSeconds(_ ticks: UInt64) -> TimeInterval {
+    private static let timebase: mach_timebase_info_data_t = {
         var info = mach_timebase_info_data_t()
         mach_timebase_info(&info)
-        return TimeInterval(ticks) * TimeInterval(info.numer)
-            / TimeInterval(info.denom) / 1_000_000_000
+        return info
+    }()
+
+    private func machToSeconds(_ ticks: UInt64) -> TimeInterval {
+        return TimeInterval(ticks) * TimeInterval(Self.timebase.numer)
+            / TimeInterval(Self.timebase.denom) / 1_000_000_000
     }
 }

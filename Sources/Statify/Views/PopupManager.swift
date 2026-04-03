@@ -23,7 +23,7 @@ final class PopupManager: NSObject, NSPopoverDelegate {
         let hostingController = NSHostingController(rootView: content)
         hostingController.view.frame = NSRect(origin: .zero, size: size)
         popover.contentViewController = hostingController
-        popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
+        popover.show(relativeTo: rect, of: view, preferredEdge: .minY)
         startEventMonitors()
     }
 

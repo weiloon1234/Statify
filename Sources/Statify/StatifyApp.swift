@@ -43,27 +43,38 @@ class AppState: ObservableObject {
     private let monitor = SystemMonitor()
     private let processMonitor = ProcessMonitor()
     private let networkInfoService = NetworkInfoService()
+    private let sampleQueue = DispatchQueue(label: "com.statify.sample", qos: .utility)
     private var networkInfoLoaded = false
-    private var refreshTask: Task<Void, Never>?
+    private var isSampling = false
+    private var currentScope: SystemMonitor.Scope = .statusBar
 
     init() {
         self.stats = monitor.stats
     }
 
-    func refresh(
-        processMode: ProcessMonitor.SampleMode? = nil,
-        force: Bool = false,
-        forceNetworkInfo: Bool = false
-    ) {
-        if force, let refreshTask {
-            refreshTask.cancel()
-            self.refreshTask = nil
+    func refresh(scope: SystemMonitor.Scope? = nil, force: Bool = false, forceNetworkInfo: Bool = false) {
+        if force {
+            isSampling = false
         }
 
-        if let processMode {
+        let targetScope = scope ?? currentScope
+        currentScope = targetScope
+
+        let needsProcesses = targetScope != .statusBar && targetScope != .temperaturePopup
+        if needsProcesses {
+            let processMode: ProcessMonitor.SampleMode
+            switch targetScope {
+            case .networkPopup: processMode = .network
+            case .diskPopup: processMode = .disk
+            case .cpuPopup, .memoryPopup: processMode = .basic
+            case .temperaturePopup: processMode = .basic
+            case .statusBar: processMode = .basic
+            }
             processes = processMonitor.sample(mode: processMode) { [weak self] updatedProcesses in
                 self?.applyProcessSample(updatedProcesses)
             }
+        } else {
+            processes = []
         }
 
         if forceNetworkInfo {
@@ -74,24 +85,28 @@ class AppState: ObservableObject {
             loadNetworkInfo()
         }
 
-        guard refreshTask == nil else {
-            return
-        }
+        guard !isSampling else { return }
+        isSampling = true
 
         let monitor = self.monitor
-        refreshTask = Task { [weak self] in
-            let stats = await Task.detached(priority: .userInitiated) {
-                monitor.sample()
-            }.value
+        sampleQueue.async { [weak self] in
+            let start = CFAbsoluteTimeGetCurrent()
+            let stats = monitor.sample(scope: targetScope)
+            let elapsed = CFAbsoluteTimeGetCurrent() - start
+            #if DEBUG
+            print("[Statify] sample took \(String(format: "%.1f", elapsed * 1000))ms scope=\(targetScope)")
+            #endif
 
-            guard !Task.isCancelled, let self = self else { return }
-            self.stats = stats
-            self.netDownloadHistory.add(stats.downloadKBps)
-            self.netUploadHistory.add(stats.uploadKBps)
-            self.diskHistory.add(stats.diskUsedGB)
-            self.cpuHistory.add(stats.cpuUsage)
-            self.memHistory.add(stats.memoryUsage)
-            self.refreshTask = nil
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.stats = stats
+                self.netDownloadHistory.add(stats.downloadKBps)
+                self.netUploadHistory.add(stats.uploadKBps)
+                self.diskHistory.add(stats.diskUsedGB)
+                self.cpuHistory.add(stats.cpuUsage)
+                self.memHistory.add(stats.memoryUsage)
+                self.isSampling = false
+            }
         }
     }
 
@@ -122,110 +137,103 @@ class ModuleButton: NSView {
     var onClick: (() -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
 
-    private let line1Icon = NSTextField(labelWithString: "")
-    private let line1Value = NSTextField(labelWithString: "")
-    private let line2Icon = NSTextField(labelWithString: "")
-    private let line2Value = NSTextField(labelWithString: "")
+    private var topText = ""
+    private var bottomText = ""
+    private var isHovered = false
+
+    private let font = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+    private lazy var textAttributes: [NSAttributedString.Key: Any] = [
+        .font: font,
+        .foregroundColor: NSColor.white
+    ]
 
     var line1: String {
-        get { "" }
+        get { topText }
         set {
-            let parts = newValue.split(separator: "\t", maxSplits: 1)
-            line1Icon.stringValue = String(parts[0])
-            line1Value.stringValue = parts.count > 1 ? String(parts[1]) : ""
+            guard newValue != topText else { return }
+            topText = newValue
+            invalidateIntrinsicContentSize()
+            needsDisplay = true
         }
     }
 
     var line2: String {
-        get { "" }
+        get { bottomText }
         set {
-            let parts = newValue.split(separator: "\t", maxSplits: 1)
-            line2Icon.stringValue = String(parts[0])
-            line2Value.stringValue = parts.count > 1 ? String(parts[1]) : ""
+            guard newValue != bottomText else { return }
+            bottomText = newValue
+            invalidateIntrinsicContentSize()
+            needsDisplay = true
         }
     }
 
     init(module: StatModule) {
         self.module = module
         super.init(frame: .zero)
-
-        let font = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
-        let isNetwork = module == .network
-
-        let fields = isNetwork
-            ? [line1Icon, line1Value, line2Icon, line2Value]
-            : [line1Icon, line2Icon]
-
-        fields.forEach {
-            $0.font = font
-            $0.textColor = .white
-            $0.isEditable = false
-            $0.isBordered = false
-            $0.drawsBackground = false
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            addSubview($0)
-        }
-
-        if isNetwork {
-            line1Icon.alignment = .left
-            line1Value.alignment = .right
-            line2Icon.alignment = .left
-            line2Value.alignment = .right
-
-            NSLayoutConstraint.activate([
-                line1Icon.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-                line1Icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-                line1Value.centerYAnchor.constraint(equalTo: line1Icon.centerYAnchor),
-                line1Value.leadingAnchor.constraint(equalTo: line1Icon.trailingAnchor, constant: 2),
-                line1Value.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-                line2Icon.topAnchor.constraint(equalTo: line1Icon.bottomAnchor, constant: -1),
-                line2Icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-                line2Value.centerYAnchor.constraint(equalTo: line2Icon.centerYAnchor),
-                line2Value.leadingAnchor.constraint(equalTo: line2Icon.trailingAnchor, constant: 2),
-                line2Value.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-                line2Icon.bottomAnchor.constraint(equalTo: bottomAnchor, constant: 0),
-            ])
-        } else {
-            line1Icon.alignment = .center
-            line2Icon.alignment = .center
-
-            NSLayoutConstraint.activate([
-                line1Icon.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-                line1Icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-                line1Icon.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-                line2Icon.topAnchor.constraint(equalTo: line1Icon.bottomAnchor, constant: -1),
-                line2Icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-                line2Icon.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-                line2Icon.bottomAnchor.constraint(equalTo: bottomAnchor, constant: 0),
-            ])
-        }
+        translatesAutoresizingMaskIntoConstraints = false
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func mouseDown(with event: NSEvent) {
-        onClick?()
+    override var intrinsicContentSize: NSSize {
+        let top = (topText as NSString).size(withAttributes: textAttributes)
+        let bottom = (bottomText as NSString).size(withAttributes: textAttributes)
+        let width = max(top.width, bottom.width) + 4
+        let height = top.height + bottom.height + 1
+        return NSSize(width: width, height: height)
     }
 
-    override func rightMouseDown(with event: NSEvent) {
-        onRightClick?(event)
+    override func draw(_ dirtyRect: NSRect) {
+        if isHovered {
+            NSColor.white.withAlphaComponent(0.1).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3).fill()
+        }
+
+        let lineHeight = bounds.height / 2
+
+        if module == .network {
+            let topParts = topText.split(separator: "\t", maxSplits: 1)
+            let bottomParts = bottomText.split(separator: "\t", maxSplits: 1)
+
+            let topIcon = topParts.first.map(String.init) ?? ""
+            let topValue = topParts.count > 1 ? String(topParts[1]) : ""
+            let bottomIcon = bottomParts.first.map(String.init) ?? ""
+            let bottomValue = bottomParts.count > 1 ? String(bottomParts[1]) : ""
+
+            (topIcon as NSString).draw(at: NSPoint(x: 2, y: lineHeight + 1), withAttributes: textAttributes)
+            (bottomIcon as NSString).draw(at: NSPoint(x: 2, y: 0), withAttributes: textAttributes)
+
+            let topValSize = (topValue as NSString).size(withAttributes: textAttributes)
+            let bottomValSize = (bottomValue as NSString).size(withAttributes: textAttributes)
+            (topValue as NSString).draw(at: NSPoint(x: bounds.width - topValSize.width - 2, y: lineHeight + 1), withAttributes: textAttributes)
+            (bottomValue as NSString).draw(at: NSPoint(x: bounds.width - bottomValSize.width - 2, y: 0), withAttributes: textAttributes)
+        } else {
+            let topSize = (topText as NSString).size(withAttributes: textAttributes)
+            let bottomSize = (bottomText as NSString).size(withAttributes: textAttributes)
+            (topText as NSString).draw(at: NSPoint(x: (bounds.width - topSize.width) / 2, y: lineHeight + 1), withAttributes: textAttributes)
+            (bottomText as NSString).draw(at: NSPoint(x: (bounds.width - bottomSize.width) / 2, y: 0), withAttributes: textAttributes)
+        }
     }
+
+    override func mouseDown(with event: NSEvent) { onClick?() }
+    override func rightMouseDown(with event: NSEvent) { onRightClick?(event) }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
+        if let existing = trackingAreas.first, existing.rect == bounds { return }
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.activeAlways, .mouseEnteredAndExited], owner: self))
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        isHovered = true
+        needsDisplay = true
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.clear.cgColor
+        isHovered = false
+        needsDisplay = true
     }
-
-    override func makeBackingLayer() -> CALayer { CALayer() }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -235,14 +243,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var timerCancellable: AnyCancellable?
     var isPanelOpen = false
     var currentModule: StatModule = .cpu
+    var currentScope: SystemMonitor.Scope = .statusBar
     var currentButton: ModuleButton?
     var moduleButtons: [StatModule: ModuleButton] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         appState = AppState()
-        appState.refresh()
-        setupMenuBar()
-        startTimer()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            guard let self = self else { return }
+            self.setupMenuBar()
+            self.appState.refresh()
+            self.startTimer()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -262,8 +274,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         for module in modules {
             let btn = ModuleButton(module: module)
-            btn.wantsLayer = true
-            btn.layer?.cornerRadius = 3
             btn.onClick = { [weak self] in
                 self?.handleModuleClick(module, button: btn)
             }
@@ -312,10 +322,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         currentModule = module
+        currentScope = moduleToScope(module)
         currentButton = button
         isPanelOpen = true
         popupManager.onClose = { [weak self] in
             self?.isPanelOpen = false
+            self?.currentScope = .statusBar
             self?.startTimer()
         }
 
@@ -336,7 +348,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             relativeTo: button.bounds,
             of: button
         )
-        appState.refresh(processMode: processSampleMode())
+
+        if !popupManager.isShown {
+            isPanelOpen = false
+            currentScope = .statusBar
+            startTimer()
+            return
+        }
+
+        appState.refresh(scope: moduleToScope(currentModule))
         updateMenuBar()
         startTimer()
     }
@@ -344,7 +364,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func refreshCurrentModule() {
         appState.refresh(
-            processMode: processSampleMode(),
+            scope: moduleToScope(currentModule),
             force: true,
             forceNetworkInfo: currentModule == .network
         )
@@ -354,28 +374,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func startTimer() {
         timerCancellable?.cancel()
-        let interval: TimeInterval = isPanelOpen ? 3.0 : 10.0
+        let interval: TimeInterval = isPanelOpen ? 5.0 : 10.0
         timerCancellable = Timer.publish(every: interval, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.appState.refresh(processMode: self?.processSampleMode())
+                    self?.appState.refresh(scope: self?.currentScope)
                     self?.updateMenuBar()
                 }
             }
     }
 
-    private func processSampleMode() -> ProcessMonitor.SampleMode? {
-        guard isPanelOpen else { return nil }
-        switch currentModule {
-        case .network:
-            return .network
-        case .disk:
-            return .disk
-        case .cpu, .memory:
-            return .basic
-        case .temperature:
-            return nil
+    private func moduleToScope(_ module: StatModule) -> SystemMonitor.Scope {
+        switch module {
+        case .cpu: return .cpuPopup
+        case .memory: return .memoryPopup
+        case .temperature: return .temperaturePopup
+        case .network: return .networkPopup
+        case .disk: return .diskPopup
         }
     }
 

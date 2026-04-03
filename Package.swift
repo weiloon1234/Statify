@@ -13,6 +13,7 @@ let package = Package(
             name: "Statify",
             dependencies: ["IOKitShim"],
             path: "Sources/Statify",
+            exclude: ["Info.plist"],
             resources: [
                 .process("Assets.xcassets")
             ],

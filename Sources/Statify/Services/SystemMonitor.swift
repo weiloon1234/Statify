@@ -16,42 +16,102 @@ final class SystemMonitor: @unchecked Sendable {
         powerReadings: [], frequencyReadings: [], voltage: nil
     )
 
+    enum Scope: Equatable {
+        case statusBar
+        case cpuPopup
+        case memoryPopup
+        case temperaturePopup
+        case networkPopup
+        case diskPopup
+    }
+
     private let cpuMonitor = CPUMonitor()
     private let memMonitor = MemoryMonitor()
     private let diskMonitor = DiskMonitor()
     private let netMonitor = NetworkMonitor()
     private let thermalFan = ThermalFanMonitor()
     private let powerMetrics = PowerMetricsService()
+    private let coreInfo: CoreInfo
+    private let chipName: String
+    private var sampleCycle = 0
+    private var currentScope: Scope = .statusBar
 
-    func sample() -> SystemStats {
+    private var lastThermal: ThermalData?
+    private var lastPower: PowerMetricsService.Result?
+    private var lastFrequency: [Double] = []
+
+    init() {
+        let detector = CoreDetector()
+        self.coreInfo = detector.detect()
+        self.chipName = ChipDetector.detect()
+    }
+
+    func sample(scope: Scope) -> SystemStats {
+        let totalStart = CFAbsoluteTimeGetCurrent()
+        self.currentScope = scope
+        sampleCycle += 1
+        let isHeavyCycle = sampleCycle % 2 == 0
+
+        let t0 = CFAbsoluteTimeGetCurrent()
         let cpu = cpuMonitor.sample()
-        let mem = memMonitor.sample()
-        let disk = diskMonitor.sample()
-        let net = netMonitor.sample()
-        let thermal = thermalFan.sample()
-        let pm = powerMetrics.sample()
+        let cpuTime = CFAbsoluteTimeGetCurrent() - t0
 
-        let coreDetector = CoreDetector()
-        let cores = coreDetector.detect()
-        let chipName = ChipDetector.detect()
-        let totalCores = cores.pCores + cores.eCores
+        let t1 = CFAbsoluteTimeGetCurrent()
+        let mem = memMonitor.sample()
+        let memTime = CFAbsoluteTimeGetCurrent() - t1
+
+        let t2 = CFAbsoluteTimeGetCurrent()
+        let disk = diskMonitor.sample()
+        let diskTime = CFAbsoluteTimeGetCurrent() - t2
+
+        let t3 = CFAbsoluteTimeGetCurrent()
+        let net = netMonitor.sample()
+        let netTime = CFAbsoluteTimeGetCurrent() - t3
+
+        let needsFullThermal = scope == .temperaturePopup
+        let needsPowerMetrics = scope == .temperaturePopup || scope == .cpuPopup
+
+        let t4 = CFAbsoluteTimeGetCurrent()
+        let thermal: ThermalData?
+        if needsFullThermal {
+            thermal = isHeavyCycle ? thermalFan.sample() : (lastThermal ?? ThermalData(cpuTemp: nil, gpuTemp: nil, sensors: [], fans: [], powerReadings: [], frequencyReadings: [], voltage: nil))
+        } else {
+            // All non-temperature scopes: just get CPU temp cheaply
+            let cpuTemp = thermalFan.readCPUTempOnly()
+            thermal = ThermalData(cpuTemp: cpuTemp, gpuTemp: nil, sensors: [], fans: [], powerReadings: [], frequencyReadings: [], voltage: nil)
+        }
+        let thermalTime = CFAbsoluteTimeGetCurrent() - t4
+
+        let t5 = CFAbsoluteTimeGetCurrent()
+        let pm = (needsPowerMetrics && isHeavyCycle) ? powerMetrics.sample() : lastPower
+        let pmTime = CFAbsoluteTimeGetCurrent() - t5
+
+        if needsFullThermal && isHeavyCycle {
+            self.lastThermal = thermal
+        }
+        if needsPowerMetrics && isHeavyCycle {
+            self.lastPower = pm
+        }
+
+        let totalElapsed = CFAbsoluteTimeGetCurrent() - totalStart
+        #if DEBUG
+        print("[sample] CPU:\(String(format: "%.1f", cpuTime*1000))ms MEM:\(String(format: "%.1f", memTime*1000))ms DISK:\(String(format: "%.1f", diskTime*1000))ms NET:\(String(format: "%.1f", netTime*1000))ms THM:\(String(format: "%.1f", thermalTime*1000))ms PM:\(String(format: "%.1f", pmTime*1000))ms TOTAL:\(String(format: "%.1f", totalElapsed*1000))ms")
+        #endif
+
+        let totalCores = coreInfo.pCores + coreInfo.eCores
         let loadAverage = SystemLoadAverage.current()
         let uptime = ProcessInfo.processInfo.systemUptime
 
-        // Merge power: prefer powermetrics, fall back to SMC
-        let powerReadings = (pm?.powerReadings.isEmpty == false) ? pm!.powerReadings : thermal.powerReadings
+        let thermalData = thermal ?? ThermalData(cpuTemp: nil, gpuTemp: nil, sensors: [], fans: [], powerReadings: [], frequencyReadings: [], voltage: nil)
+        let powerReadings = (pm?.powerReadings.isEmpty == false) ? pm!.powerReadings : thermalData.powerReadings
         let totalPower = powerReadings.first(where: { $0.name == "Total Power" })?.watts
-
-        // Merge frequency: prefer powermetrics, fall back to static estimate
         let frequencyReadings = pm?.frequencyReadings ?? []
         let cpuGhz = frequencyReadings
             .first(where: { $0.name.contains("P-Cores") || $0.name.contains("Performance") })?.ghz
             ?? ChipDetector.getCpuGhz()
         let gpuGhz = frequencyReadings
             .first(where: { $0.name == "Graphics" })?.ghz
-
-        // Voltage from SMC
-        let voltage = thermal.voltage
+        let voltage = thermalData.voltage
 
         let stats = SystemStats(
             cpuUsage: cpu.overall,
@@ -72,22 +132,22 @@ final class SystemMonitor: @unchecked Sendable {
             diskTotalGB: disk.totalGB,
             downloadKBps: net.downloadKBs,
             uploadKBps: net.uploadKBs,
-            cpuTemp: thermal.cpuTemp,
+            cpuTemp: thermalData.cpuTemp,
             cpuGhz: cpuGhz,
             gpuGhz: gpuGhz,
-            gpuTemp: thermal.gpuTemp,
+            gpuTemp: thermalData.gpuTemp,
             powerWatts: totalPower,
             loadAverage1: loadAverage.oneMinute,
             loadAverage5: loadAverage.fiveMinute,
             loadAverage15: loadAverage.fifteenMinute,
             uptime: uptime,
             chipName: chipName,
-            pCoreCount: cores.pCores,
-            eCoreCount: cores.eCores,
+            pCoreCount: coreInfo.pCores,
+            eCoreCount: coreInfo.eCores,
             totalCores: totalCores,
             coreUsages: cpu.perCore,
-            temperatureSensors: thermal.sensors,
-            fans: thermal.fans,
+            temperatureSensors: thermalData.sensors,
+            fans: thermalData.fans,
             networkInfo: NetworkInfo(),
             powerReadings: powerReadings,
             frequencyReadings: frequencyReadings,
@@ -126,6 +186,7 @@ final class CPUMonitor {
 
     func sample() -> CPUUsage {
         let hostPort = mach_host_self()
+        defer { mach_port_deallocate(mach_task_self_, hostPort) }
         var count = mach_msg_type_number_t(0)
         var processorInfo: processor_info_array_t!
         var processorCount: mach_msg_type_number_t = 0
@@ -211,6 +272,7 @@ final class MemoryMonitor {
 
     func sample() -> MemoryUsage {
         let hostPort = mach_host_self()
+        defer { mach_port_deallocate(mach_task_self_, hostPort) }
         var pageSize: vm_size_t = 0
         host_page_size(hostPort, &pageSize)
 
@@ -326,8 +388,51 @@ final class NetworkMonitor {
     private var lastBytesIn: UInt64 = 0
     private var lastBytesOut: UInt64 = 0
     private var lastTimestamp: Date?
+    private var hasActiveInterface: Bool = true
+
+    private func checkActiveInterface() -> Bool {
+        let mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
+        var length = 0
+        guard mib.withUnsafeBufferPointer({ mibPtr in
+            sysctl(UnsafeMutablePointer(mutating: mibPtr.baseAddress), 6, nil, &length, nil, 0)
+        }) == 0 else { return false }
+
+        var buffer = [UInt8](repeating: 0, count: length)
+        guard mib.withUnsafeBufferPointer({ mibPtr in
+            buffer.withUnsafeMutableBytes({ ptr in
+                sysctl(UnsafeMutablePointer(mutating: mibPtr.baseAddress), 6, ptr.baseAddress, &length, nil, 0)
+            })
+        }) == 0 else { return false }
+
+        var found = false
+        buffer.withUnsafeBytes { rawPtr in
+            var ptr = rawPtr.baseAddress!
+            let end = ptr.advanced(by: length)
+            while ptr < end && !found {
+                let msg = ptr.assumingMemoryBound(to: if_msghdr.self)
+                if msg.pointee.ifm_type == RTM_IFINFO2 {
+                    let msg2 = ptr.assumingMemoryBound(to: if_msghdr2.self)
+                    let flags = UInt32(msg2.pointee.ifm_flags)
+                    if (flags & UInt32(IFF_LOOPBACK)) == 0 &&
+                       (flags & UInt32(IFF_UP)) != 0 &&
+                       (flags & UInt32(IFF_RUNNING)) != 0 {
+                        found = true
+                    }
+                }
+                ptr = ptr.advanced(by: Int(msg.pointee.ifm_msglen))
+            }
+        }
+        return found
+    }
 
     func sample() -> NetworkStatsResult {
+        if !hasActiveInterface {
+            hasActiveInterface = checkActiveInterface()
+            if !hasActiveInterface {
+                return NetworkStatsResult(downloadKBs: 0, uploadKBs: 0)
+            }
+        }
+
         let mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
         var length = 0
         guard mib.withUnsafeBufferPointer({ mibPtr in

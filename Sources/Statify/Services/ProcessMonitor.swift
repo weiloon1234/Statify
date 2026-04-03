@@ -31,14 +31,15 @@ final class ProcessMonitor {
     private var recentDiskActivity: [Int32: RecentDiskActivity] = [:]
     private var cachedNetStats: [Int32: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
     private var nameCache: [Int32: String] = [:]
-    private var nettopQueue = DispatchQueue(label: "com.statify.nettop", qos: .utility)
-    private var processQueue = DispatchQueue(label: "com.statify.process", qos: .userInitiated)
+    private var nettopQueue = DispatchQueue(label: "com.statify.nettop", qos: .background)
+    private var processQueue = DispatchQueue(label: "com.statify.process", qos: .utility)
     private var nettopFetchCount = 0
     private var lastNettopFetch: Date?
     private var lastSample: [ProcessStats] = []
     private var isSampling = false
     private let recentActivityRetention: TimeInterval = 15
     private var sampleCount = 0
+    private var diskSampleCount = 0
 
     func sample(mode: SampleMode, onUpdate: (([ProcessStats]) -> Void)? = nil) -> [ProcessStats] {
         if !isSampling {
@@ -118,7 +119,7 @@ final class ProcessMonitor {
                 uploadKBps = recent.uploadKBps
             }
 
-            if includesDisk {
+            if includesDisk && diskSampleCount % 3 == 0 {
                 var usage = rusage_info_v4()
                 let rusageResult = withUnsafeMutablePointer(to: &usage) { usagePointer in
                     usagePointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { reboundPointer in
@@ -169,6 +170,7 @@ final class ProcessMonitor {
             recentDiskActivity = recentDiskActivity.filter {
                 now.timeIntervalSince($0.value.timestamp) <= recentActivityRetention
             }
+            diskSampleCount += 1
         }
         previousTimestamp = now
 
@@ -236,7 +238,7 @@ final class ProcessMonitor {
     }
 
     private func fetchNettopStatsAsync() {
-        guard (lastNettopFetch.map { Date().timeIntervalSince($0) > 5 } ?? true) else { return }
+        guard (lastNettopFetch.map { Date().timeIntervalSince($0) > 15 } ?? true) else { return }
         lastNettopFetch = Date()
 
         nettopFetchCount += 1
