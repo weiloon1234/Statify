@@ -1,0 +1,5 @@
+module CIOKit [system] {
+    header "IOKitShim.h"
+    link "IOKit"
+    export *
+}
