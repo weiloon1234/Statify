@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import AppKit
+import ServiceManagement
 
 enum StatModule: String, CaseIterable {
     case network = "NET"
@@ -119,6 +120,7 @@ class AppState: ObservableObject {
 class ModuleButton: NSView {
     let module: StatModule
     var onClick: (() -> Void)?
+    var onRightClick: ((NSEvent) -> Void)?
 
     private let line1Icon = NSTextField(labelWithString: "")
     private let line1Value = NSTextField(labelWithString: "")
@@ -205,6 +207,10 @@ class ModuleButton: NSView {
         onClick?()
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?(event)
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
@@ -260,6 +266,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             btn.layer?.cornerRadius = 3
             btn.onClick = { [weak self] in
                 self?.handleModuleClick(module, button: btn)
+            }
+            btn.onRightClick = { [weak self] event in
+                self?.showContextMenu(for: btn, event: event)
             }
             moduleButtons[module] = btn
             containerView.addSubview(btn)
@@ -410,5 +419,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             val = String(format: "%.0fK", kbps)
         }
         return val.rightPad(to: colW - 1)
+    }
+
+    // MARK: - Context Menu
+
+    @MainActor
+    private func showContextMenu(for button: ModuleButton, event: NSEvent) {
+        if popupManager.isShown {
+            popupManager.close()
+            isPanelOpen = false
+        }
+
+        let menu = NSMenu()
+
+        let launchItem = NSMenuItem(
+            title: "Launch at Login",
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: ""
+        )
+        launchItem.target = self
+        launchItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(launchItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(
+            title: "Quit Statify",
+            action: #selector(quitApp),
+            keyEquivalent: "q"
+        )
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let service = SMAppService.mainApp
+        if service.status == .enabled {
+            try? service.unregister()
+        } else {
+            try? service.register()
+        }
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 }

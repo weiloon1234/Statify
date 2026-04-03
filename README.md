@@ -31,64 +31,55 @@ A lightweight macOS menu bar system monitor built with SwiftUI. Statify provides
 
 ## Building & Installing
 
-### Option 1: Build with Xcode (development)
-
 ```bash
 git clone https://github.com/weiloon1234/Statify.git
 cd Statify
+```
+
+### Build the .app bundle
+
+```bash
+make app
+# Creates build/Statify.app
+```
+
+### Install to /Applications
+
+```bash
+make install
+# Builds and copies Statify.app to /Applications
+open /Applications/Statify.app
+```
+
+### Create a .dmg installer
+
+```bash
+make dmg
+# Creates build/Statify.dmg — open it and drag Statify to Applications
+```
+
+### Other commands
+
+```bash
+make clean       # Remove build artifacts
+make uninstall   # Remove from /Applications
+```
+
+### Development (Xcode)
+
+```bash
 open Package.swift
 ```
 
 Select **My Mac** as the run destination, then build and run (`Cmd+R`).
 
-### Option 2: Build release binary from the command line
+### Uninstall
 
-```bash
-git clone https://github.com/weiloon1234/Statify.git
-cd Statify
+Delete `/Applications/Statify.app`, or run `make uninstall`.
 
-# Build release binary
-swift build -c release
+### Launch at login
 
-# The binary is at:
-# .build/release/Statify
-```
-
-### Option 3: Build a standalone .app bundle and install
-
-```bash
-git clone https://github.com/weiloon1234/Statify.git
-cd Statify
-
-# Build release
-swift build -c release
-
-# Create the .app bundle
-mkdir -p Statify.app/Contents/MacOS
-mkdir -p Statify.app/Contents/Resources
-
-cp .build/release/Statify Statify.app/Contents/MacOS/
-cp Sources/Statify/Info.plist Statify.app/Contents/
-
-# Copy app icon (optional — requires actool from Xcode)
-xcrun actool Sources/Statify/Assets.xcassets \
-  --compile Statify.app/Contents/Resources \
-  --platform macosx --minimum-deployment-target 13.0 \
-  --app-icon AppIcon --output-partial-info-plist /dev/null 2>/dev/null
-
-# Install to Applications
-cp -r Statify.app /Applications/
-
-# Launch
-open /Applications/Statify.app
-```
-
-To **uninstall**, simply delete `/Applications/Statify.app`.
-
-### Launch at login (optional)
-
-1. Open **System Settings → General → Login Items**
-2. Click **+** and select **Statify** from Applications
+Right-click any module in the menu bar and toggle **Launch at Login**, or add it manually via **System Settings → General → Login Items**.
 
 ## Architecture
 

@@ -9,7 +9,8 @@ DerivedData/
 *.xcscmblueprint
 *.xccheckout
 
-# Swift Package Manager
+# Build output
+/build
 /.build
 /Packages
 .swiftpm/configuration/registries.json
