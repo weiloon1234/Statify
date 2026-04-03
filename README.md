@@ -6,6 +6,8 @@ A lightweight macOS menu bar system monitor built with SwiftUI. Statify provides
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+> **Tested on:** Apple M4 Max, macOS Tahoe. Other configurations may work but are untested.
+
 ## Features
 
 - **CPU Monitor** — Per-core usage with P-Core/E-Core separation (Apple Silicon), overall utilization, and top processes
@@ -25,22 +27,68 @@ A lightweight macOS menu bar system monitor built with SwiftUI. Statify provides
 ## Requirements
 
 - macOS 13.0 (Ventura) or later
-- Apple Silicon or Intel Mac
+- Apple Silicon Mac
 
-## Building
+## Building & Installing
 
-Open the project in Xcode and build:
+### Option 1: Build with Xcode (development)
 
 ```bash
-# Clone the repo
 git clone https://github.com/weiloon1234/Statify.git
 cd Statify
-
-# Open in Xcode
 open Package.swift
 ```
 
 Select **My Mac** as the run destination, then build and run (`Cmd+R`).
+
+### Option 2: Build release binary from the command line
+
+```bash
+git clone https://github.com/weiloon1234/Statify.git
+cd Statify
+
+# Build release binary
+swift build -c release
+
+# The binary is at:
+# .build/release/Statify
+```
+
+### Option 3: Build a standalone .app bundle and install
+
+```bash
+git clone https://github.com/weiloon1234/Statify.git
+cd Statify
+
+# Build release
+swift build -c release
+
+# Create the .app bundle
+mkdir -p Statify.app/Contents/MacOS
+mkdir -p Statify.app/Contents/Resources
+
+cp .build/release/Statify Statify.app/Contents/MacOS/
+cp Sources/Statify/Info.plist Statify.app/Contents/
+
+# Copy app icon (optional — requires actool from Xcode)
+xcrun actool Sources/Statify/Assets.xcassets \
+  --compile Statify.app/Contents/Resources \
+  --platform macosx --minimum-deployment-target 13.0 \
+  --app-icon AppIcon --output-partial-info-plist /dev/null 2>/dev/null
+
+# Install to Applications
+cp -r Statify.app /Applications/
+
+# Launch
+open /Applications/Statify.app
+```
+
+To **uninstall**, simply delete `/Applications/Statify.app`.
+
+### Launch at login (optional)
+
+1. Open **System Settings → General → Login Items**
+2. Click **+** and select **Statify** from Applications
 
 ## Architecture
 
